@@ -1,6 +1,6 @@
 # GWTW Floorplanner Integration
 
-This document describes the integration of the Generalized-Where-The-Wind-Blows (GWTW) floorplanner that has replaced the previous simulated annealing (SA) based floorplanner.
+This document describes the integration of the Go-With-The-Winners (GWTW) floorplanner that has replaced the previous simulated annealing (SA) based floorplanner.
 
 ## Changes Made
 
