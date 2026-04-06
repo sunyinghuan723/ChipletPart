@@ -1,0 +1,2 @@
+/usr/bin/ar qc ../lib/libConstructChip.a CMakeFiles/ConstructChip.dir/src/ConstructChip.cpp.o
+/usr/bin/ranlib ../lib/libConstructChip.a

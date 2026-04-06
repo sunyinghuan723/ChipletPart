@@ -1,0 +1,2 @@
+/usr/bin/ar qc ../lib/libReadDesignFromFile.a CMakeFiles/ReadDesignFromFile.dir/src/ReadDesignFromFile.cpp.o
+/usr/bin/ranlib ../lib/libReadDesignFromFile.a

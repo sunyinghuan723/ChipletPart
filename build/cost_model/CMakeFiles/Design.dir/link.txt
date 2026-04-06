@@ -1,0 +1,2 @@
+/usr/bin/ar qc ../lib/libDesign.a CMakeFiles/Design.dir/src/design/Assembly.cpp.o CMakeFiles/Design.dir/src/design/Chip.cpp.o CMakeFiles/Design.dir/src/design/IO.cpp.o CMakeFiles/Design.dir/src/design/Layer.cpp.o CMakeFiles/Design.dir/src/design/Test.cpp.o CMakeFiles/Design.dir/src/design/TestChipBinding.cpp.o CMakeFiles/Design.dir/src/design/WaferProcess.cpp.o
+/usr/bin/ranlib ../lib/libDesign.a

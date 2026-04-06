@@ -1,0 +1,2 @@
+/usr/bin/ar qc ../lib/libcost_model.a CMakeFiles/cost_model.dir/evaluator_cpp.cpp.o
+/usr/bin/ranlib ../lib/libcost_model.a
