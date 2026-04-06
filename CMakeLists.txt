@@ -60,12 +60,13 @@ endif()
 # METIS and GKlib (local installation)
 # ---------------------------------------------------------------------------
 # Set the METIS root directory based on your local installation.
-set(METIS_ROOT "/home/fetzfs_projects/TritonPart/bodhi/branch_chiplet/branch_JETCAS/ChipletPart/METIS")
+set(METIS_ROOT "${PROJECT_SOURCE_DIR}/METIS")  # 使用 CMake 内置的项目根目录变量
 # Define GKlib root directory.
-set(GKLIB_ROOT "/home/fetzfs_projects/TritonPart/bodhi/branch_chiplet/branch_JETCAS/ChipletPart/GKlib")
+set(GKLIB_ROOT "${PROJECT_SOURCE_DIR}/GKlib")  # 使用 CMake 内置的项目根目录变量
 
 # Include GKlib headers so that types like idx_t and real_t are defined.
 include_directories(${GKLIB_ROOT})
+include_directories(${GKLIB_ROOT}/include)  # 添加头文件路径
 
 if(EXISTS "${METIS_ROOT}/include/metis.h")
     add_definitions(-DIDXTYPEWIDTH=64)
@@ -74,9 +75,9 @@ if(EXISTS "${METIS_ROOT}/include/metis.h")
     include_directories(${METIS_ROOT}/include)
     
     # Build GKlib as a static library.
-    file(GLOB GKLIB_SOURCES "${GKLIB_ROOT}/*.c")
+    file(GLOB GKLIB_SOURCES "${GKLIB_ROOT}/*.c" "${GKLIB_ROOT}/src/*.c")  # 修改源码查找路径
     if(GKLIB_SOURCES)
-        add_library(gk STATIC ${GKLIB_SOURCES})
+        add_library(GKlib STATIC ${GKLIB_SOURCES})
         message(STATUS "Built GKlib static library from ${GKLIB_ROOT}")
     else()
         message(FATAL_ERROR "No GKlib source files found in ${GKLIB_ROOT}")
@@ -135,6 +136,7 @@ include_directories(${PROJECT_SOURCE_DIR})
 # Global include directories
 # ---------------------------------------------------------------------------
 include_directories(${PROJECT_SOURCE_DIR})
+include_directories(${PROJECT_SOURCE_DIR}/src)  # <--- 新增这一行
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_SOURCE_DIR}/cost_model)
 include_directories(${PROJECT_SOURCE_DIR}/cost_model/include)
@@ -179,7 +181,7 @@ if(BUILD_MAIN_APP)
     
     # Link METIS and GKlib if available and not disabled (on non-Apple platforms)
     if(HAVE_METIS AND (NOT APPLE))
-        target_link_libraries(chipletPart PRIVATE metis gk)
+        target_link_libraries(chipletPart PRIVATE metis GKlib)
     endif()
     
     # Link OpenMP if found.
