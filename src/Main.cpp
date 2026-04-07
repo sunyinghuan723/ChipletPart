@@ -37,10 +37,12 @@
 #include "Hypergraph.h"
 #include "Utilities.h"
 #include "evaluator_cpp.h" // Include the cost model evaluator_cpp.h instead of evaluator.h
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <stdexcept>
 #include <filesystem>
@@ -117,10 +119,17 @@ void displayUsage(const char* programName) {
   std::cout << "  --population <value>  : Population size for genetic algorithm (default: 50)" << std::endl;
   std::cout << "  --max-partitions <value> : Maximum number of partitions for tech enumeration (default: 4)" << std::endl;
   std::cout << "  --detailed-output     : Generate detailed output for tech enumeration" << std::endl;
+  std::cout << "  --thermal             : Enable DeepOHeat hotspot cost in standard/evaluation modes" << std::endl;
+  std::cout << "  --thermal-weight <v>  : Weight for thermal peak in the combined objective (default: 1.0)" << std::endl;
+  std::cout << "  --thermal-python <p>  : Python executable from the deepoheat conda env" << std::endl;
+  std::cout << "  --thermal-script <p>  : Override DeepOHeat bridge script path" << std::endl;
+  std::cout << "  --thermal-root <p>    : Override DeepOHeat repository root" << std::endl;
+  std::cout << "  --thermal-checkpoint <p> : Override DeepOHeat checkpoint path" << std::endl;
   std::cout << "Examples:" << std::endl;
   std::cout << "  " << programName << " io.xml layer.xml wafer.xml assembly.xml test.xml netlist.xml blocks.txt 0.5 0.25 7nm" << std::endl;
   std::cout << "  " << programName << " io.xml layer.xml wafer.xml assembly.xml test.xml netlist.xml blocks.txt 0.5 0.25 --canonical-ga --tech-nodes 7nm,14nm,28nm --seed 123" << std::endl;
   std::cout << "  " << programName << " io.xml layer.xml wafer.xml assembly.xml test.xml netlist.xml blocks.txt 0.5 0.25 --tech-enum --tech-nodes 7nm,14nm,28nm --max-partitions 3" << std::endl;
+  std::cout << "  " << programName << " io.xml layer.xml wafer.xml assembly.xml test.xml netlist.xml blocks.txt 0.5 0.25 7nm --thermal --thermal-weight 0.1" << std::endl;
 }
 
 // Function to parse a comma-separated list of technologies
@@ -220,6 +229,39 @@ bool hasFlag(int argc, char* argv[], const std::string& option) {
     }
   }
   return false;
+}
+
+bool isOptionWithValue(const std::string& option) {
+  static const std::unordered_set<std::string> options = {
+      "--seed",
+      "--max-partitions",
+      "--tech-nodes",
+      "--generations",
+      "--population",
+      "--thermal-weight",
+      "--thermal-python",
+      "--thermal-script",
+      "--thermal-root",
+      "--thermal-checkpoint"};
+  return options.find(option) != options.end();
+}
+
+std::vector<std::string> collectPositionalArgs(int argc, char* argv[]) {
+  std::vector<std::string> clean_args;
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--canonical-ga" || arg == "--tech-enum" ||
+        arg == "--detailed-output" || arg == "--genetic-tech-part" ||
+        arg == "--thermal") {
+      continue;
+    }
+    if (isOptionWithValue(arg)) {
+      ++i;
+      continue;
+    }
+    clean_args.push_back(arg);
+  }
+  return clean_args;
 }
 
 // Add this function after other command handling functions
@@ -495,23 +537,58 @@ int main(int argc, char *argv[]) {
     
     // Create ChipletPart instance
     auto chiplet_part = std::make_shared<chiplet::ChipletPart>(seed);
+
+    const bool useThermal = hasFlag(argc, argv, "--thermal");
+    if (useThermal) {
+      std::string thermalWeightStr;
+      float thermalWeight = 1.0f;
+      if (getArgValue(argc, argv, "--thermal-weight", thermalWeightStr)) {
+        thermalWeight = safeStof(thermalWeightStr, "thermal_weight");
+      }
+
+      const std::filesystem::path cwd = std::filesystem::current_path();
+      const std::filesystem::path defaultScript = cwd / "scripts" / "deepoheat_hotspot.py";
+      const std::filesystem::path defaultRoot = cwd.parent_path() / "DeepOHeat";
+      const std::filesystem::path defaultCheckpoint =
+          defaultRoot / "DeepOHeat" / "2d_power_map" / "log" / "experiment_1" /
+          "checkpoints" / "model_epoch_10000.pth";
+
+      std::string pythonExecutable;
+      if (!getArgValue(argc, argv, "--thermal-python", pythonExecutable)) {
+        const char* home = std::getenv("HOME");
+        if (home != nullptr) {
+          pythonExecutable =
+              (std::filesystem::path(home) / "miniconda3" / "envs" / "deepoheat" / "bin" /
+               "python")
+                  .string();
+        }
+      }
+
+      std::string scriptPath = defaultScript.string();
+      std::string rootPath = defaultRoot.string();
+      std::string checkpointPath = defaultCheckpoint.string();
+      getArgValue(argc, argv, "--thermal-script", scriptPath);
+      getArgValue(argc, argv, "--thermal-root", rootPath);
+      getArgValue(argc, argv, "--thermal-checkpoint", checkpointPath);
+
+      chiplet_part->ConfigureThermalModel(
+          true,
+          thermalWeight,
+          pythonExecutable,
+          scriptPath,
+          rootPath,
+          checkpointPath);
+
+      if (useCanonicalGA || useTechEnum || useGeneticTechPart) {
+        Console::Warning(
+            "Thermal objective is currently wired for standard partitioning and partition evaluation modes.");
+      }
+    }
     
     // Technology enumeration mode
     if (useTechEnum) {
       try {
-        // Create a clean list of arguments without optional flags and their values
-        std::vector<std::string> cleanArgs;
-        for (int i = 1; i < argc; i++) {
-          std::string arg = argv[i];
-          if (arg == "--tech-enum" || arg == "--detailed-output") {
-            continue; // Skip the flag itself
-          }
-          if (arg == "--seed" || arg == "--max-partitions" || arg == "--tech-nodes") {
-            i++; // Skip the flag and its value
-            continue;
-          }
-          cleanArgs.push_back(arg);
-        }
+        std::vector<std::string> cleanArgs = collectPositionalArgs(argc, argv);
         
         // Check if we have enough arguments for technology enumeration
         if (cleanArgs.size() < 9) {
@@ -648,19 +725,7 @@ int main(int argc, char *argv[]) {
     // Special handling for canonical GA mode
     else if (useCanonicalGA) {
       try {
-        // Create a clean list of arguments without optional flags and their values
-        std::vector<std::string> cleanArgs;
-        for (int i = 1; i < argc; i++) {
-          std::string arg = argv[i];
-          if (arg == "--canonical-ga") {
-            continue; // Skip the flag itself
-          }
-          if (arg == "--seed" || arg == "--generations" || arg == "--population" || arg == "--tech-nodes") {
-            i++; // Skip the flag and its value
-            continue;
-          }
-          cleanArgs.push_back(arg);
-        }
+        std::vector<std::string> cleanArgs = collectPositionalArgs(argc, argv);
         
         // Check if we have enough arguments for canonical GA
         if (cleanArgs.size() < 9) {
@@ -722,15 +787,9 @@ int main(int argc, char *argv[]) {
     }
     
     // The rest of the code for standard partitioning modes
-    int effectiveArgc = argc;
-    
-    // Adjust effectiveArgc if --seed is used
-    if (hasSeed) {
-      effectiveArgc -= 2; // Remove --seed and its value from the count
-    }
-    
-    // Check if we have the correct number of arguments
-    if (effectiveArgc < 11 || effectiveArgc > 12) {
+    std::vector<std::string> cleanArgs = collectPositionalArgs(argc, argv);
+
+    if (cleanArgs.size() < 10 || cleanArgs.size() > 11) {
       displayUsage(argv[0]);
       return 1;
     }
@@ -740,50 +799,15 @@ int main(int argc, char *argv[]) {
       chiplet_part->SetSeed(seed);
     }
     
-    // Determine the actual indices for the arguments
-    int argOffset = 0;
-    for (int i = 1; i < argc; i++) {
-      if (std::string(argv[i]) == "--seed") {
-        i++; // Skip the seed value
-        argOffset += 2;
-      }
-    }
-    
-    if (effectiveArgc == 11) {
+    if (cleanArgs.size() == 10) {
       // Partitioning mode with XML input
-      std::string io_definitions_file = argv[1 + argOffset * (argv[1] == std::string("--seed"))];
-      std::string layer_definitions_file = argv[2 + argOffset * (argv[2] == std::string("--seed") || argv[1] == std::string("--seed"))];
-      std::string wafer_process_definitions_file = argv[3 + argOffset * (argv[3] == std::string("--seed") || argv[2] == std::string("--seed") || argv[1] == std::string("--seed"))];
-      std::string assembly_process_definitions_file = argv[4 + argOffset * (argv[4] == std::string("--seed") || argv[3] == std::string("--seed") || argv[2] == std::string("--seed") || argv[1] == std::string("--seed"))];
-      std::string test_definitions_file = argv[5 + argOffset * (argv[5] == std::string("--seed") || argv[4] == std::string("--seed") || argv[3] == std::string("--seed") || argv[2] == std::string("--seed") || argv[1] == std::string("--seed"))];
-      std::string block_level_netlist_file = argv[6 + argOffset * (argv[6] == std::string("--seed") || argv[5] == std::string("--seed") || argv[4] == std::string("--seed") || argv[3] == std::string("--seed") || argv[2] == std::string("--seed") || argv[1] == std::string("--seed"))];
-      std::string block_definitions_file = argv[7 + argOffset * (argv[7] == std::string("--seed") || argv[6] == std::string("--seed") || argv[5] == std::string("--seed") || argv[4] == std::string("--seed") || argv[3] == std::string("--seed") || argv[2] == std::string("--seed") || argv[1] == std::string("--seed"))];
-      
-      // The logic above is complex and error-prone, let's simplify it:
-      // Since the seed parameter can appear anywhere, we need a cleaner approach
-      
-      // Create a new array without the seed parameters
-      std::vector<std::string> cleanArgs;
-      for (int i = 0; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "--seed") {
-          i++; // Skip the seed value
-          continue;
-        }
-        if (i > 0) { // Skip program name
-          cleanArgs.push_back(arg);
-        }
-      }
-      
-      // Now use the cleaned args
-      io_definitions_file = cleanArgs[0];
-      layer_definitions_file = cleanArgs[1];
-      wafer_process_definitions_file = cleanArgs[2];
-      assembly_process_definitions_file = cleanArgs[3];
-      test_definitions_file = cleanArgs[4];
-      block_level_netlist_file = cleanArgs[5];
-      block_definitions_file = cleanArgs[6];
-      
+      std::string io_definitions_file = cleanArgs[0];
+      std::string layer_definitions_file = cleanArgs[1];
+      std::string wafer_process_definitions_file = cleanArgs[2];
+      std::string assembly_process_definitions_file = cleanArgs[3];
+      std::string test_definitions_file = cleanArgs[4];
+      std::string block_level_netlist_file = cleanArgs[5];
+      std::string block_definitions_file = cleanArgs[6];
       float reach = safeStof(cleanArgs[7], "reach");
       float separation = safeStof(cleanArgs[8], "separation");
       std::string tech = cleanArgs[9];
@@ -805,21 +829,8 @@ int main(int argc, char *argv[]) {
             assembly_process_definitions_file, test_definitions_file, block_level_netlist_file, 
             block_definitions_file, reach, separation, tech);
       }
-    } else if (effectiveArgc == 12) {
+    } else if (cleanArgs.size() == 11) {
       // Evaluation mode
-      // Use the same cleanArgs approach for evaluation mode
-      std::vector<std::string> cleanArgs;
-      for (int i = 0; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "--seed") {
-          i++; // Skip the seed value
-          continue;
-        }
-        if (i > 0) { // Skip program name
-          cleanArgs.push_back(arg);
-        }
-      }
-      
       std::string hypergraph_part = cleanArgs[0];
       std::string io_definitions_file = cleanArgs[1];
       std::string layer_definitions_file = cleanArgs[2];

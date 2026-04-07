@@ -38,9 +38,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <list>
 #include <map>
@@ -63,6 +66,83 @@
 
 // Include the unified OpenMP support header instead of direct include
 #include "OpenMPSupport.h"
+
+namespace {
+
+std::string ShellEscape(const std::string& value) {
+  if (value.empty()) {
+    return "''";
+  }
+
+  std::string escaped = "'";
+  for (char ch : value) {
+    if (ch == '\'') {
+      escaped += "'\\''";
+    } else {
+      escaped += ch;
+    }
+  }
+  escaped += "'";
+  return escaped;
+}
+
+std::string FormatFloatVector(const std::vector<float>& values, int count) {
+  std::ostringstream out;
+  out << std::fixed << std::setprecision(6);
+  for (int i = 0; i < count && i < static_cast<int>(values.size()); ++i) {
+    out << values[i] << ",";
+  }
+  return out.str();
+}
+
+std::string MakeThermalCacheKey(
+    const std::vector<int>& partition,
+    const std::vector<std::string>& tech_array,
+    const std::vector<float>& aspect_ratios,
+    const std::vector<float>& x_locations,
+    const std::vector<float>& y_locations,
+    int num_partitions) {
+  std::ostringstream out;
+  out << num_partitions << "|";
+  for (int value : partition) {
+    out << value << ",";
+  }
+  out << "|";
+  for (int i = 0; i < num_partitions && i < static_cast<int>(tech_array.size()); ++i) {
+    out << tech_array[i] << ",";
+  }
+  out << "|" << FormatFloatVector(aspect_ratios, num_partitions);
+  out << "|" << FormatFloatVector(x_locations, num_partitions);
+  out << "|" << FormatFloatVector(y_locations, num_partitions);
+  return out.str();
+}
+
+bool HasUsableFloorplan(
+    const std::vector<float>& x_locations,
+    const std::vector<float>& y_locations,
+    int num_partitions) {
+  if (num_partitions <= 1) {
+    return true;
+  }
+
+  for (int i = 0; i < num_partitions; ++i) {
+    if (i < static_cast<int>(x_locations.size()) &&
+        i < static_cast<int>(y_locations.size()) &&
+        (std::abs(x_locations[i]) > 1e-6f || std::abs(y_locations[i]) > 1e-6f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::filesystem::path CreateThermalLayoutPath() {
+  const auto timestamp =
+      std::chrono::high_resolution_clock::now().time_since_epoch().count();
+  return std::filesystem::temp_directory_path() /
+         ("chipletpart_thermal_" + std::to_string(timestamp) + ".json");
+}
+
+}  // namespace
 
 namespace chiplet {
 
@@ -2046,6 +2126,22 @@ void ChipletRefiner::SetCostModelFiles(
   }
 }
 
+void ChipletRefiner::ConfigureThermalModel(
+    bool enabled,
+    float weight,
+    const std::string& python_executable,
+    const std::string& script_path,
+    const std::string& deepoheat_root,
+    const std::string& checkpoint_path) {
+  thermal_model_enabled_ = enabled;
+  thermal_weight_ = weight;
+  thermal_python_executable_ = python_executable;
+  thermal_script_path_ = script_path;
+  thermal_deepoheat_root_ = deepoheat_root;
+  thermal_checkpoint_path_ = checkpoint_path;
+  thermal_cache_.clear();
+}
+
 // Initialize the cost model with the configured files
 bool ChipletRefiner::InitializeCostModel() {
   // Check if all required files are set
@@ -2176,8 +2272,8 @@ float ChipletRefiner::GetCostFromScratch(const std::vector<int>& partition, bool
               << " to " << num_partitions << " elements" << std::endl;*/
     local_y_locations.resize(num_partitions, 0.0f); // Default y location is 0.0
   }
-  
-  return getCostFromScratch(
+
+  const float base_cost = getCostFromScratch(
       partition, 
       local_tech_array, 
       local_aspect_ratios, 
@@ -2188,6 +2284,134 @@ float ChipletRefiner::GetCostFromScratch(const std::vector<int>& partition, bool
       cost_coefficient_, 
       power_coefficient_,
       approx_state);  // Pass the approx_state parameter
+
+  if (!thermal_model_enabled_ || approx_state) {
+    return base_cost;
+  }
+
+  if (thermal_python_executable_.empty() || thermal_script_path_.empty() ||
+      thermal_deepoheat_root_.empty() || thermal_checkpoint_path_.empty()) {
+    std::cerr << "[ERROR] Thermal model enabled but required paths are missing" << std::endl;
+    return std::numeric_limits<float>::max();
+  }
+
+  if (!HasUsableFloorplan(local_x_locations, local_y_locations, num_partitions)) {
+    std::cerr << "[ERROR] Thermal model requires a valid floorplan before scoring" << std::endl;
+    return std::numeric_limits<float>::max();
+  }
+
+  const std::string thermal_key = MakeThermalCacheKey(
+      partition,
+      local_tech_array,
+      local_aspect_ratios,
+      local_x_locations,
+      local_y_locations,
+      num_partitions);
+  const auto cache_it = thermal_cache_.find(thermal_key);
+  if (cache_it != thermal_cache_.end()) {
+    return base_cost + thermal_weight_ * cache_it->second;
+  }
+
+  const std::vector<std::vector<int>> partition_vector = getPartitionVector(partition);
+  std::vector<float> chiplet_areas;
+  std::vector<float> chiplet_powers;
+  std::vector<std::string> tech_array_trimmed(
+      local_tech_array.begin(), local_tech_array.begin() + num_partitions);
+  getAreas(chiplet_areas, partition_vector, blocks_, tech_array_trimmed, num_partitions);
+  getPowers(chiplet_powers, partition_vector, blocks_, tech_array_trimmed, num_partitions);
+
+  const auto layout_path = CreateThermalLayoutPath();
+  {
+    std::ofstream layout_out(layout_path);
+    layout_out << "{\n";
+    layout_out << "  \"chiplets\": [\n";
+    for (int i = 0; i < num_partitions; ++i) {
+      const float area =
+          (i < static_cast<int>(chiplet_areas.size()) && chiplet_areas[i] > 0.0f)
+              ? chiplet_areas[i]
+              : 1e-6f;
+      const float aspect_ratio =
+          (i < static_cast<int>(local_aspect_ratios.size()) &&
+           local_aspect_ratios[i] > 1e-6f)
+              ? local_aspect_ratios[i]
+              : 1.0f;
+      const float width = std::sqrt(area * aspect_ratio);
+      const float height = area / std::max(width, 1e-6f);
+      const float power =
+          (i < static_cast<int>(chiplet_powers.size())) ? chiplet_powers[i] : 0.0f;
+
+      layout_out << "    {\n";
+      layout_out << "      \"id\": " << i << ",\n";
+      layout_out << "      \"power\": " << power << ",\n";
+      layout_out << "      \"x\": " << local_x_locations[i] << ",\n";
+      layout_out << "      \"y\": " << local_y_locations[i] << ",\n";
+      layout_out << "      \"width\": " << width << ",\n";
+      layout_out << "      \"height\": " << height << "\n";
+      layout_out << "    }" << (i + 1 == num_partitions ? "\n" : ",\n");
+    }
+    layout_out << "  ]\n";
+    layout_out << "}\n";
+  }
+
+  std::ostringstream command;
+  command << ShellEscape(thermal_python_executable_) << " "
+          << ShellEscape(thermal_script_path_) << " "
+          << "--input " << ShellEscape(layout_path.string()) << " "
+          << "--deepoheat-root " << ShellEscape(thermal_deepoheat_root_) << " "
+          << "--checkpoint " << ShellEscape(thermal_checkpoint_path_) << " "
+          << "--reference-total-power " << thermal_reference_total_power_;
+
+  FILE* pipe = popen(command.str().c_str(), "r");
+  if (pipe == nullptr) {
+    std::error_code remove_error;
+    std::filesystem::remove(layout_path, remove_error);
+    std::cerr << "[ERROR] Failed to launch DeepOHeat thermal evaluation" << std::endl;
+    return std::numeric_limits<float>::max();
+  }
+
+  std::string output;
+  char buffer[512];
+  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+    output += buffer;
+  }
+  const int status = pclose(pipe);
+  std::error_code remove_error;
+  std::filesystem::remove(layout_path, remove_error);
+
+  if (status != 0) {
+    std::cerr << "[ERROR] DeepOHeat thermal evaluation failed: " << output << std::endl;
+    return std::numeric_limits<float>::max();
+  }
+
+  std::istringstream output_stream(output);
+  std::string line;
+  float thermal_peak = std::numeric_limits<float>::quiet_NaN();
+  while (std::getline(output_stream, line)) {
+    if (line.rfind("THERMAL_RESULT_C ", 0) == 0) {
+      thermal_peak = std::stof(line.substr(std::string("THERMAL_RESULT_C ").size()));
+      break;
+    }
+  }
+
+  if (!std::isfinite(thermal_peak)) {
+    output_stream.clear();
+    output_stream.seekg(0);
+    while (std::getline(output_stream, line)) {
+      if (line.rfind("THERMAL_RESULT ", 0) == 0) {
+        thermal_peak = std::stof(line.substr(std::string("THERMAL_RESULT ").size()));
+        break;
+      }
+    }
+  }
+
+  if (!std::isfinite(thermal_peak)) {
+    std::cerr << "[ERROR] DeepOHeat thermal evaluation did not return a hotspot value: "
+              << output << std::endl;
+    return std::numeric_limits<float>::max();
+  }
+
+  thermal_cache_[thermal_key] = thermal_peak;
+  return base_cost + thermal_weight_ * thermal_peak;
 }
 
 } // namespace chiplet

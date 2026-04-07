@@ -44,6 +44,7 @@
 #include <chrono>
 #include <deque>
 #include <set>
+#include <unordered_map>
 namespace chiplet {
 
 using Partition = std::vector<int>;
@@ -164,6 +165,13 @@ public:
   
   // Control the weight of cost model vs connectivity gain
   void SetCostModelWeight(float weight) { cost_model_weight_ = weight; }
+  void ConfigureThermalModel(
+      bool enabled,
+      float weight,
+      const std::string& python_executable = "",
+      const std::string& script_path = "",
+      const std::string& deepoheat_root = "",
+      const std::string& checkpoint_path = "");
 
   std::tuple<std::vector<float>, std::vector<float>, std::vector<float>, bool>
   RunFloorplanner(std::vector<int> &partition, HGraphPtr hgraph, int max_steps,
@@ -651,6 +659,14 @@ private:
   std::vector<block> blocks_; // Block data populated by readBlocks
   float cost_model_weight_ = 1.0f; // Weight for cost model vs connectivity gain
   float random_non_boundary_ratio_ = 0.05f;    // Ratio of random non-boundary vertices to include
+  bool thermal_model_enabled_ = false;
+  float thermal_weight_ = 0.0f;
+  float thermal_reference_total_power_ = 0.25f;
+  std::string thermal_python_executable_;
+  std::string thermal_script_path_;
+  std::string thermal_deepoheat_root_;
+  std::string thermal_checkpoint_path_;
+  mutable std::unordered_map<std::string, float> thermal_cache_;
 };
 
 using ChipletRefinerPtr = std::shared_ptr<ChipletRefiner>;

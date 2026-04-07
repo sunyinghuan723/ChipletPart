@@ -1679,7 +1679,7 @@ void ChipletPart::Partition(
     refine_iters_ = 3;
   }
   
-  bool floorplanning = false;
+  bool floorplanning = thermal_model_enabled_;
   
   // Create a ChipletRefiner with cost model files to test initialization
   Console::Info("Creating ChipletRefiner with cost model files to test initialization");
@@ -1698,6 +1698,7 @@ void ChipletPart::Partition(
       chiplet_netlist_file,         // netlist_file
       chiplet_blocks_file           // blocks_file
   );
+  ApplyThermalModelConfig(refiner);
   
   if (hypergraph_->GetNumVertices() > 200) {
     refiner->SetBoundary();
@@ -1851,6 +1852,13 @@ void ChipletPart::Partition(
   for (size_t i = 0; i < init_partitions.size(); i++) {
     std::vector<int> partition_copy = init_partitions[i];
     int num_parts = *std::max_element(partition_copy.begin(), partition_copy.end()) + 1;
+    if (floorplanning) {
+      auto floor_result = refiner->RunFloorplanner(
+          partition_copy, hypergraph_, 100, 100, 0.00001);
+      refiner->SetAspectRatios(std::get<0>(floor_result));
+      refiner->SetXLocations(std::get<1>(floor_result));
+      refiner->SetYLocations(std::get<2>(floor_result));
+    }
     float cost = refiner->GetCostFromScratch(partition_copy);
     
     // Update statistics
@@ -2140,6 +2148,7 @@ void ChipletPart::Partition(
           chiplet_netlist_file,         // netlist_file
           chiplet_blocks_file           // blocks_file
       );
+      ApplyThermalModelConfig(thread_refiner);
 
       if (hypergraph_->GetNumVertices() > 200) {
         thread_refiner->SetBoundary();
@@ -2231,6 +2240,18 @@ void ChipletPart::Partition(
           Console::Error("Exception in KL refinement: " + std::string(e.what()));
         } catch (...) {
           Console::Error("Unknown exception in KL refinement");
+        }
+
+        if (floorplanning) {
+          auto refined_floor_result =
+              thread_refiner->RunFloorplanner(partition_copy, hypergraph_, 100, 100, 0.00001);
+          result_aspect_ratios = std::get<0>(refined_floor_result);
+          result_x_locations = std::get<1>(refined_floor_result);
+          result_y_locations = std::get<2>(refined_floor_result);
+          success = success && std::get<3>(refined_floor_result);
+          thread_refiner->SetAspectRatios(result_aspect_ratios);
+          thread_refiner->SetXLocations(result_x_locations);
+          thread_refiner->SetYLocations(result_y_locations);
         }
         
         float final_cost = thread_refiner->GetCostFromScratch(partition_copy);
@@ -2482,6 +2503,7 @@ void ChipletPart::EvaluatePartition(
       chiplet_netlist_file,         // netlist_file
       chiplet_blocks_file           // blocks_file
   );
+  ApplyThermalModelConfig(refiner);
   
   if (hypergraph_->GetNumVertices() > 200) {
     refiner->SetBoundary();
@@ -3351,6 +3373,40 @@ ChipletPart::ChipletPart() {
   rng_.seed(seed_);
 }
 
+void ChipletPart::ConfigureThermalModel(
+    bool enabled,
+    float weight,
+    const std::string& python_executable,
+    const std::string& script_path,
+    const std::string& deepoheat_root,
+    const std::string& checkpoint_path) {
+  thermal_model_enabled_ = enabled;
+  thermal_weight_ = weight;
+  thermal_python_executable_ = python_executable;
+  thermal_script_path_ = script_path;
+  thermal_deepoheat_root_ = deepoheat_root;
+  thermal_checkpoint_path_ = checkpoint_path;
+
+  if (thermal_model_enabled_) {
+    Console::Info("Thermal objective enabled with weight " + std::to_string(thermal_weight_));
+  }
+}
+
+void ChipletPart::ApplyThermalModelConfig(
+    const std::shared_ptr<ChipletRefiner>& refiner) const {
+  if (!refiner) {
+    return;
+  }
+
+  refiner->ConfigureThermalModel(
+      thermal_model_enabled_,
+      thermal_weight_,
+      thermal_python_executable_,
+      thermal_script_path_,
+      thermal_deepoheat_root_,
+      thermal_checkpoint_path_);
+}
+
 void ChipletPart::QuickTechPartition(
     std::string chiplet_io_file,
     std::string chiplet_layer_file, 
@@ -3396,6 +3452,7 @@ void ChipletPart::QuickTechPartition(
       chiplet_netlist_file,         // netlist_file
       chiplet_blocks_file           // blocks_file
   );
+  ApplyThermalModelConfig(refiner);
   
   // Set the technology array
   refiner->SetTechArray(tech_nodes);

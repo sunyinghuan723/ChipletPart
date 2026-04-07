@@ -27,6 +27,10 @@ show_help() {
     echo "  --generations <num>   Specify number of generations for genetic algorithm (default: 50)"
     echo "  --population <num>    Specify population size for genetic algorithm (default: 50)"
     echo "  --evaluate-partition  Specify path to partition file for evaluation"
+    echo "  --thermal             Enable DeepOHeat hotspot cost in standard/evaluation modes"
+    echo "  --thermal-weight <v>  Weight for the DeepOHeat hotspot term (default: 1.0)"
+    echo "  --thermal-python <p>  Path to the Python executable inside the deepoheat conda env"
+    echo "  --thermal-checkpoint <p>  Override the DeepOHeat checkpoint path"
     echo "  --help                Display this help message"
     echo
     echo "Examples:"
@@ -66,6 +70,10 @@ USE_TECH_ENUM=false
 DETAILED_OUTPUT=false
 TECH_NODES=""
 EVALUATE_PARTITION=""
+USE_THERMAL=false
+THERMAL_WEIGHT="1.0"
+THERMAL_PYTHON=""
+THERMAL_CHECKPOINT=""
 
 # Parse command line arguments
 while [ "$#" -gt 0 ]; do
@@ -126,6 +134,22 @@ while [ "$#" -gt 0 ]; do
             EVALUATE_PARTITION="$2"
             shift 2
             ;;
+        --thermal)
+            USE_THERMAL=true
+            shift
+            ;;
+        --thermal-weight)
+            THERMAL_WEIGHT="$2"
+            shift 2
+            ;;
+        --thermal-python)
+            THERMAL_PYTHON="$2"
+            shift 2
+            ;;
+        --thermal-checkpoint)
+            THERMAL_CHECKPOINT="$2"
+            shift 2
+            ;;
         *)
             echo -e "${RED}Error: Unknown option: $1${NC}"
             show_help
@@ -170,6 +194,17 @@ for file in "$IO" "$LAYER" "$WAFER" "$ASSEMBLY" "$TEST" "$NETLIST" "$BLOCKS"; do
     fi
 done
 
+THERMAL_ARGS=()
+if [ "$USE_THERMAL" = true ]; then
+    THERMAL_ARGS+=(--thermal --thermal-weight "$THERMAL_WEIGHT")
+    if [ -n "$THERMAL_PYTHON" ]; then
+        THERMAL_ARGS+=(--thermal-python "$THERMAL_PYTHON")
+    fi
+    if [ -n "$THERMAL_CHECKPOINT" ]; then
+        THERMAL_ARGS+=(--thermal-checkpoint "$THERMAL_CHECKPOINT")
+    fi
+fi
+
 # Check if we're evaluating an existing partition
 if [ -n "$EVALUATE_PARTITION" ]; then
     if [ ! -f "$EVALUATE_PARTITION" ]; then
@@ -192,6 +227,7 @@ if [ -n "$EVALUATE_PARTITION" ]; then
         "$DEFAULT_REACH" \
         "$DEFAULT_SEPARATION" \
         "$DEFAULT_TECH" \
+        "${THERMAL_ARGS[@]}" \
         --seed "$DEFAULT_SEED"
         
     exit_code=$?
@@ -244,6 +280,7 @@ if [ "$USE_TECH_ENUM" = true ]; then
         --tech-nodes "$TECH_NODES" \
         --max-partitions "$DEFAULT_MAX_PARTITIONS" \
         $DETAIL_FLAG \
+        "${THERMAL_ARGS[@]}" \
         --seed "$DEFAULT_SEED"
         
 elif [ "$USE_CANONICAL_GA" = true ]; then
@@ -279,6 +316,7 @@ elif [ "$USE_CANONICAL_GA" = true ]; then
         --tech-nodes "$TECH_NODES" \
         --generations "$DEFAULT_GENERATIONS" \
         --population "$DEFAULT_POPULATION" \
+        "${THERMAL_ARGS[@]}" \
         --seed "$DEFAULT_SEED"
         
 elif [ "$USE_GENETIC" = true ]; then
@@ -336,6 +374,7 @@ else
         "$DEFAULT_REACH" \
         "$DEFAULT_SEPARATION" \
         "$DEFAULT_TECH" \
+        "${THERMAL_ARGS[@]}" \
         --seed "$DEFAULT_SEED"
 fi
 

@@ -60,6 +60,8 @@
 
 namespace chiplet {
 
+class ChipletRefiner;
+
 class ChipletPart {
 
 public:
@@ -219,6 +221,14 @@ public:
     int max_partitions,
     bool detailed_output = false);
 
+  void ConfigureThermalModel(
+      bool enabled,
+      float weight,
+      const std::string& python_executable = "",
+      const std::string& script_path = "",
+      const std::string& deepoheat_root = "",
+      const std::string& checkpoint_path = "");
+
 private:
   // Helper method that converts XML files to hypergraph representation
   void ConvertXMLToHypergraph(const std::string& netlist_file,
@@ -273,6 +283,7 @@ private:
   void assignRemainingVerticesParallel(std::vector<int>& partition, 
                                     const std::unordered_map<int, int>& vertex_to_partition,
                                     int num_parts);
+  void ApplyThermalModelConfig(const std::shared_ptr<ChipletRefiner>& refiner) const;
   float ub_factor_ = 1.0; // balance constraint
   int num_parts_ = 8;     // number of partitions
   int refine_iters_ = 2;  // number of refinement iterations
@@ -319,6 +330,12 @@ private:
   int num_individuals_ = 6;    // number of individuals to be selected for
                                // mating pool
   std::mt19937 rng_;           // random number generator
+  bool thermal_model_enabled_ = false;
+  float thermal_weight_ = 0.0f;
+  std::string thermal_python_executable_;
+  std::string thermal_script_path_;
+  std::string thermal_deepoheat_root_;
+  std::string thermal_checkpoint_path_;
   // std::mt19937 rng_;
 };
 
